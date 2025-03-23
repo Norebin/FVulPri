@@ -1,0 +1,3022 @@
+CVEid,func,expert
+CVE-2016-2464,"long Tracks::ParseTrackEntry(long long track_start, long long track_size,
+ long long element_start, long long element_size,
+ Track*& pResult) const {
+ if (pResult)
+ return -1;
+
+ IMkvReader* const pReader = m_pSegment->m_pReader;
+
+ long long pos = track_start;
+ const long long track_stop = track_start + track_size;
+
+ Track::Info info;
+
+  info.type = 0;
+  info.number = 0;
+  info.uid = 0;
+  info.defaultDuration = 0;
+
+ Track::Settings v;
+  v.start = -1;
+  v.size = -1;
+
+ Track::Settings a;
+  a.start = -1;
+  a.size = -1;
+
+ Track::Settings e; // content_encodings_settings;
+  e.start = -1;
+  e.size = -1;
+
+ long long lacing = 1; // default is true
+
+ while (pos < track_stop) {
+ long long id, size;
+
+ const long status = ParseElementHeader(pReader, pos, track_stop, id, size);
+
+ if (status < 0) // error
+ return status;
+
+ if (size < 0)
+ return E_FILE_FORMAT_INVALID;
+
+ const long long start = pos;
+
+ if (id == 0x60) { // VideoSettings ID
+      v.start = start;
+      v.size = size;
+ } else if (id == 0x61) { // AudioSettings ID
+      a.start = start;
+      a.size = size;
+ } else if (id == 0x2D80) { // ContentEncodings ID
+      e.start = start;
+      e.size = size;
+ } else if (id == 0x33C5) { // Track UID
+ if (size > 8)
+ return E_FILE_FORMAT_INVALID;
+
+      info.uid = 0;
+
+ long long pos_ = start;
+ const long long pos_end = start + size;
+
+ while (pos_ != pos_end) {
+ unsigned char b;
+
+ const int status = pReader->Read(pos_, 1, &b);
+
+ if (status)
+ return status;
+
+        info.uid <<= 8;
+        info.uid |= b;
+
+ ++pos_;
+ }
+ } else if (id == 0x57) { // Track Number
+ const long long num = UnserializeUInt(pReader, pos, size);
+
+ if ((num <= 0) || (num > 127))
+ return E_FILE_FORMAT_INVALID;
+
+      info.number = static_cast<long>(num);
+ } else if (id == 0x03) { // Track Type
+ const long long type = UnserializeUInt(pReader, pos, size);
+
+ if ((type <= 0) || (type > 254))
+ return E_FILE_FORMAT_INVALID;
+
+      info.type = static_cast<long>(type);
+ } else if (id == 0x136E) { // Track Name
+ const long status =
+ UnserializeString(pReader, pos, size, info.nameAsUTF8);
+
+ if (status)
+ return status;
+ } else if (id == 0x02B59C) { // Track Language
+ const long status = UnserializeString(pReader, pos, size, info.language);
+
+ if (status)
+ return status;
+ } else if (id == 0x03E383) { // Default Duration
+ const long long duration = UnserializeUInt(pReader, pos, size);
+
+ if (duration < 0)
+ return E_FILE_FORMAT_INVALID;
+
+      info.defaultDuration = static_cast<unsigned long long>(duration);
+ } else if (id == 0x06) { // CodecID
+ const long status = UnserializeString(pReader, pos, size, info.codecId);
+
+ if (status)
+ return status;
+ } else if (id == 0x1C) { // lacing
+      lacing = UnserializeUInt(pReader, pos, size);
+
+ if ((lacing < 0) || (lacing > 1))
+ return E_FILE_FORMAT_INVALID;
+ } else if (id == 0x23A2) { // Codec Private
+ delete[] info.codecPrivate;
+      info.codecPrivate = NULL;
+      info.codecPrivateSize = 0;
+
+
+       const size_t buflen = static_cast<size_t>(size);
+ 
+       if (buflen) {
+        typedef unsigned char* buf_t;
+        const buf_t buf = new (std::nothrow) unsigned char[buflen];
+ 
+         if (buf == NULL)
+           return -1;
+
+ const int status = pReader->Read(pos, static_cast<long>(buflen), buf);
+
+ if (status) {
+ delete[] buf;
+ return status;
+ }
+
+        info.codecPrivate = buf;
+        info.codecPrivateSize = buflen;
+ }
+ } else if (id == 0x058688) { // Codec Name
+ const long status =
+ UnserializeString(pReader, pos, size, info.codecNameAsUTF8);
+
+ if (status)
+ return status;
+ } else if (id == 0x16AA) { // Codec Delay
+      info.codecDelay = UnserializeUInt(pReader, pos, size);
+ } else if (id == 0x16BB) { // Seek Pre Roll
+      info.seekPreRoll = UnserializeUInt(pReader, pos, size);
+
+     }
+ 
+     pos += size;  // consume payload
+    assert(pos <= track_stop);
+   }
+ 
+  assert(pos == track_stop);
+ 
+   if (info.number <= 0)  // not specified
+     return E_FILE_FORMAT_INVALID;
+
+ if (GetTrackByNumber(info.number))
+ return E_FILE_FORMAT_INVALID;
+
+ if (info.type <= 0) // not specified
+ return E_FILE_FORMAT_INVALID;
+
+  info.lacing = (lacing > 0) ? true : false;
+
+ if (info.type == Track::kVideo) {
+ if (v.start < 0)
+ return E_FILE_FORMAT_INVALID;
+
+ if (a.start >= 0)
+ return E_FILE_FORMAT_INVALID;
+
+    info.settings = v;
+
+ VideoTrack* pTrack = NULL;
+
+ const long status = VideoTrack::Parse(m_pSegment, info, element_start,
+                                          element_size, pTrack);
+
+ if (status)
+ return status;
+
+    pResult = pTrack;
+    assert(pResult);
+
+ if (e.start >= 0)
+      pResult->ParseContentEncodingsEntry(e.start, e.size);
+ } else if (info.type == Track::kAudio) {
+ if (a.start < 0)
+ return E_FILE_FORMAT_INVALID;
+
+ if (v.start >= 0)
+ return E_FILE_FORMAT_INVALID;
+
+    info.settings = a;
+
+ AudioTrack* pTrack = NULL;
+
+ const long status = AudioTrack::Parse(m_pSegment, info, element_start,
+                                          element_size, pTrack);
+
+ if (status)
+ return status;
+
+    pResult = pTrack;
+    assert(pResult);
+
+ if (e.start >= 0)
+      pResult->ParseContentEncodingsEntry(e.start, e.size);
+ } else {
+
+ if (a.start >= 0)
+ return E_FILE_FORMAT_INVALID;
+
+ if (v.start >= 0)
+ return E_FILE_FORMAT_INVALID;
+
+ if (info.type == Track::kMetadata && e.start >= 0)
+ return E_FILE_FORMAT_INVALID;
+
+    info.settings.start = -1;
+    info.settings.size = 0;
+
+ Track* pTrack = NULL;
+
+ const long status =
+ Track::Create(m_pSegment, info, element_start, element_size, pTrack);
+
+ if (status)
+ return status;
+
+    pResult = pTrack;
+    assert(pResult);
+ }
+
+ return 0; // success
+}
+",neutral
+CVE-2019-13106,"void handle_pxe_menu(cmd_tbl_t *cmdtp, struct pxe_menu *cfg)
+{
+	void *choice;
+	struct menu *m;
+	int err;
+
+#ifdef CONFIG_CMD_BMP
+ 	/* display BMP if available */
+ 	if (cfg->bmp) {
+ 		if (get_relfile(cmdtp, cfg->bmp, image_load_addr)) {
+			run_command(""cls"", 0);
+ 			bmp_display(image_load_addr,
+ 				    BMP_ALIGN_CENTER, BMP_ALIGN_CENTER);
+ 		} else {
+			printf(""Skipping background bmp %s for failure\n"",
+			       cfg->bmp);
+		}
+	}
+#endif
+
+	m = pxe_menu_to_menu(cfg);
+	if (!m)
+		return;
+
+	err = menu_get_choice(m, &choice);
+
+	menu_destroy(m);
+
+	/*
+	 * err == 1 means we got a choice back from menu_get_choice.
+	 *
+	 * err == -ENOENT if the menu was setup to select the default but no
+	 * default was set. in that case, we should continue trying to boot
+	 * labels that haven't been attempted yet.
+	 *
+	 * otherwise, the user interrupted or there was some other error and
+	 * we give up.
+	 */
+
+	if (err == 1) {
+		err = label_boot(cmdtp, choice);
+		if (!err)
+			return;
+	} else if (err != -ENOENT) {
+		return;
+	}
+
+	boot_unattempted_labels(cmdtp, cfg);
+}
+",agree
+CVE-2016-2487,"void SoftAVC::onQueueFilled(OMX_U32 portIndex) {
+    UNUSED(portIndex);
+
+ if (mSignalledError) {
+ return;
+ }
+ if (mOutputPortSettingsChange != NONE) {
+ return;
+ }
+
+ if (NULL == mCodecCtx) {
+ if (OK != initDecoder()) {
+            ALOGE(""Failed to initialize decoder"");
+            notify(OMX_EventError, OMX_ErrorUnsupportedSetting, 0, NULL);
+            mSignalledError = true;
+ return;
+ }
+ }
+ if (outputBufferWidth() != mStride) {
+ /* Set the run-time (dynamic) parameters */
+        mStride = outputBufferWidth();
+        setParams(mStride);
+ }
+
+ List<BufferInfo *> &inQueue = getPortQueue(kInputPortIndex);
+ List<BufferInfo *> &outQueue = getPortQueue(kOutputPortIndex);
+
+ /* If input EOS is seen and decoder is not in flush mode,
+     * set the decoder in flush mode.
+     * There can be a case where EOS is sent along with last picture data
+     * In that case, only after decoding that input data, decoder has to be
+     * put in flush. This case is handled here  */
+
+ if (mReceivedEOS && !mIsInFlush) {
+        setFlushMode();
+ }
+
+ while (!outQueue.empty()) {
+ BufferInfo *inInfo;
+        OMX_BUFFERHEADERTYPE *inHeader;
+
+ BufferInfo *outInfo;
+        OMX_BUFFERHEADERTYPE *outHeader;
+ size_t timeStampIx;
+
+        inInfo = NULL;
+        inHeader = NULL;
+
+ if (!mIsInFlush) {
+ if (!inQueue.empty()) {
+                inInfo = *inQueue.begin();
+                inHeader = inInfo->mHeader;
+ if (inHeader == NULL) {
+                    inQueue.erase(inQueue.begin());
+                    inInfo->mOwnedByUs = false;
+ continue;
+ }
+ } else {
+ break;
+ }
+ }
+
+        outInfo = *outQueue.begin();
+        outHeader = outInfo->mHeader;
+        outHeader->nFlags = 0;
+        outHeader->nTimeStamp = 0;
+        outHeader->nOffset = 0;
+
+ if (inHeader != NULL) {
+ if (inHeader->nFilledLen == 0) {
+                inQueue.erase(inQueue.begin());
+                inInfo->mOwnedByUs = false;
+                notifyEmptyBufferDone(inHeader);
+
+ if (!(inHeader->nFlags & OMX_BUFFERFLAG_EOS)) {
+ continue;
+ }
+
+                mReceivedEOS = true;
+                inHeader = NULL;
+                setFlushMode();
+ } else if (inHeader->nFlags & OMX_BUFFERFLAG_EOS) {
+                mReceivedEOS = true;
+ }
+ }
+
+ /* Get a free slot in timestamp array to hold input timestamp */
+ {
+ size_t i;
+            timeStampIx = 0;
+ for (i = 0; i < MAX_TIME_STAMPS; i++) {
+ if (!mTimeStampsValid[i]) {
+                    timeStampIx = i;
+ break;
+ }
+ }
+ if (inHeader != NULL) {
+                mTimeStampsValid[timeStampIx] = true;
+                mTimeStamps[timeStampIx] = inHeader->nTimeStamp;
+ }
+ }
+
+ {
+ ivd_video_decode_ip_t s_dec_ip;
+ ivd_video_decode_op_t s_dec_op;
+
+             WORD32 timeDelay, timeTaken;
+             size_t sizeY, sizeUV;
+ 
+            setDecodeArgs(&s_dec_ip, &s_dec_op, inHeader, outHeader, timeStampIx);
+             DUMP_TO_FILE(mInFile, s_dec_ip.pv_stream_buffer, s_dec_ip.u4_num_Bytes);
+ 
+            GETTIME(&mTimeStart, NULL);
+ /* Compute time elapsed between end of previous decode()
+             * to start of current decode() */
+            TIME_DIFF(mTimeEnd, mTimeStart, timeDelay);
+
+            IV_API_CALL_STATUS_T status;
+            status = ivdec_api_function(mCodecCtx, (void *)&s_dec_ip, (void *)&s_dec_op);
+
+ bool unsupportedResolution =
+ (IVD_STREAM_WIDTH_HEIGHT_NOT_SUPPORTED == (s_dec_op.u4_error_code & 0xFF));
+
+ /* Check for unsupported dimensions */
+ if (unsupportedResolution) {
+                ALOGE(""Unsupported resolution : %dx%d"", mWidth, mHeight);
+                notify(OMX_EventError, OMX_ErrorUnsupportedSetting, 0, NULL);
+                mSignalledError = true;
+ return;
+ }
+
+ bool allocationFailed = (IVD_MEM_ALLOC_FAILED == (s_dec_op.u4_error_code & 0xFF));
+ if (allocationFailed) {
+                ALOGE(""Allocation failure in decoder"");
+                notify(OMX_EventError, OMX_ErrorUnsupportedSetting, 0, NULL);
+                mSignalledError = true;
+ return;
+ }
+
+ bool resChanged = (IVD_RES_CHANGED == (s_dec_op.u4_error_code & 0xFF));
+
+            GETTIME(&mTimeEnd, NULL);
+ /* Compute time taken for decode() */
+            TIME_DIFF(mTimeStart, mTimeEnd, timeTaken);
+
+            PRINT_TIME(""timeTaken=%6d delay=%6d numBytes=%6d"", timeTaken, timeDelay,
+                   s_dec_op.u4_num_bytes_consumed);
+ if (s_dec_op.u4_frame_decoded_flag && !mFlushNeeded) {
+                mFlushNeeded = true;
+ }
+
+ if ((inHeader != NULL) && (1 != s_dec_op.u4_frame_decoded_flag)) {
+ /* If the input did not contain picture data, then ignore
+                 * the associated timestamp */
+                mTimeStampsValid[timeStampIx] = false;
+ }
+
+ if (mChangingResolution && !s_dec_op.u4_output_present) {
+                mChangingResolution = false;
+                resetDecoder();
+                resetPlugin();
+ continue;
+ }
+
+ if (resChanged) {
+                mChangingResolution = true;
+ if (mFlushNeeded) {
+                    setFlushMode();
+ }
+ continue;
+ }
+
+ if ((0 < s_dec_op.u4_pic_wd) && (0 < s_dec_op.u4_pic_ht)) {
+ uint32_t width = s_dec_op.u4_pic_wd;
+ uint32_t height = s_dec_op.u4_pic_ht;
+ bool portWillReset = false;
+                handlePortSettingsChange(&portWillReset, width, height);
+
+ if (portWillReset) {
+                    resetDecoder();
+ return;
+ }
+ }
+
+ if (s_dec_op.u4_output_present) {
+                outHeader->nFilledLen = (outputBufferWidth() * outputBufferHeight() * 3) / 2;
+
+                outHeader->nTimeStamp = mTimeStamps[s_dec_op.u4_ts];
+                mTimeStampsValid[s_dec_op.u4_ts] = false;
+
+                outInfo->mOwnedByUs = false;
+                outQueue.erase(outQueue.begin());
+                outInfo = NULL;
+                notifyFillBufferDone(outHeader);
+                outHeader = NULL;
+ } else {
+ /* If in flush mode and no output is returned by the codec,
+                 * then come out of flush mode */
+                mIsInFlush = false;
+
+ /* If EOS was recieved on input port and there is no output
+                 * from the codec, then signal EOS on output port */
+ if (mReceivedEOS) {
+                    outHeader->nFilledLen = 0;
+                    outHeader->nFlags |= OMX_BUFFERFLAG_EOS;
+
+                    outInfo->mOwnedByUs = false;
+                    outQueue.erase(outQueue.begin());
+                    outInfo = NULL;
+                    notifyFillBufferDone(outHeader);
+                    outHeader = NULL;
+                    resetPlugin();
+ }
+ }
+ }
+
+ if (inHeader != NULL) {
+            inInfo->mOwnedByUs = false;
+            inQueue.erase(inQueue.begin());
+            inInfo = NULL;
+            notifyEmptyBufferDone(inHeader);
+            inHeader = NULL;
+ }
+ }
+}
+",agree
+CVE-2016-2464," const BlockEntry* Cluster::GetEntry(const CuePoint& cp,
+                                     const CuePoint::TrackPosition& tp) const {
+   assert(m_pSegment);
+#if 0
+    LoadBlockEntries();
+    if (m_entries == NULL)
+        return NULL;
+    const long long count = m_entries_count;
+    if (count <= 0)
+        return NULL;
+    const long long tc = cp.GetTimeCode();
+    if ((tp.m_block > 0) && (tp.m_block <= count))
+    {
+        const size_t block = static_cast<size_t>(tp.m_block);
+        const size_t index = block - 1;
+        const BlockEntry* const pEntry = m_entries[index];
+        assert(pEntry);
+        assert(!pEntry->EOS());
+        const Block* const pBlock = pEntry->GetBlock();
+        assert(pBlock);
+        if ((pBlock->GetTrackNumber() == tp.m_track) &&
+            (pBlock->GetTimeCode(this) == tc))
+        {
+            return pEntry;
+        }
+    }
+    const BlockEntry* const* i = m_entries;
+    const BlockEntry* const* const j = i + count;
+    while (i != j)
+    {
+#ifdef _DEBUG
+        const ptrdiff_t idx = i - m_entries;
+        idx;
+#endif
+        const BlockEntry* const pEntry = *i++;
+        assert(pEntry);
+        assert(!pEntry->EOS());
+        const Block* const pBlock = pEntry->GetBlock();
+        assert(pBlock);
+        if (pBlock->GetTrackNumber() != tp.m_track)
+            continue;
+        const long long tc_ = pBlock->GetTimeCode(this);
+        assert(tc_ >= 0);
+        if (tc_ < tc)
+            continue;
+        if (tc_ > tc)
+            return NULL;
+        const Tracks* const pTracks = m_pSegment->GetTracks();
+        assert(pTracks);
+        const long tn = static_cast<long>(tp.m_track);
+        const Track* const pTrack = pTracks->GetTrackByNumber(tn);
+        if (pTrack == NULL)
+            return NULL;
+        const long long type = pTrack->GetType();
+        if (type == 2)  //audio
+            return pEntry;
+        if (type != 1)  //not video
+            return NULL;
+        if (!pBlock->IsKey())
+            return NULL;
+        return pEntry;
+    }
+    return NULL;
+#else
+   const long long tc = cp.GetTimeCode();
+ 
+   if (tp.m_block > 0) {
+ const long block = static_cast<long>(tp.m_block);
+ const long index = block - 1;
+
+ while (index >= m_entries_count) {
+ long long pos;
+ long len;
+
+ const long status = Parse(pos, len);
+
+ if (status < 0) // TODO: can this happen?
+ return NULL;
+
+ if (status > 0) // nothing remains to be parsed
+ return NULL;
+ }
+
+ const BlockEntry* const pEntry = m_entries[index];
+    assert(pEntry);
+    assert(!pEntry->EOS());
+
+ const Block* const pBlock = pEntry->GetBlock();
+    assert(pBlock);
+
+ if ((pBlock->GetTrackNumber() == tp.m_track) &&
+ (pBlock->GetTimeCode(this) == tc)) {
+ return pEntry;
+ }
+ }
+
+ long index = 0;
+
+ for (;;) {
+ if (index >= m_entries_count) {
+ long long pos;
+ long len;
+
+ const long status = Parse(pos, len);
+
+ if (status < 0) // TODO: can this happen?
+ return NULL;
+
+ if (status > 0) // nothing remains to be parsed
+ return NULL;
+
+      assert(m_entries);
+      assert(index < m_entries_count);
+ }
+
+ const BlockEntry* const pEntry = m_entries[index];
+    assert(pEntry);
+    assert(!pEntry->EOS());
+
+ const Block* const pBlock = pEntry->GetBlock();
+    assert(pBlock);
+
+ if (pBlock->GetTrackNumber() != tp.m_track) {
+ ++index;
+ continue;
+ }
+
+ const long long tc_ = pBlock->GetTimeCode(this);
+
+ if (tc_ < tc) {
+ ++index;
+ continue;
+ }
+
+ if (tc_ > tc)
+ return NULL;
+
+ const Tracks* const pTracks = m_pSegment->GetTracks();
+    assert(pTracks);
+
+ const long tn = static_cast<long>(tp.m_track);
+ const Track* const pTrack = pTracks->GetTrackByNumber(tn);
+
+ if (pTrack == NULL)
+ return NULL;
+
+ const long long type = pTrack->GetType();
+
+ if (type == 2) // audio
+ return pEntry;
+
+ if (type != 1) // not video
+ return NULL;
+
+ if (!pBlock->IsKey())
+ return NULL;
+
+ 
+     return pEntry;
+   }
+#endif
+ }
+",agree
+CVE-2016-2487,"void SoftVorbis::onQueueFilled(OMX_U32 portIndex) {
+ List<BufferInfo *> &inQueue = getPortQueue(0);
+ List<BufferInfo *> &outQueue = getPortQueue(1);
+
+ if (mOutputPortSettingsChange != NONE) {
+ return;
+ }
+
+ if (portIndex == 0 && mInputBufferCount < 2) {
+ BufferInfo *info = *inQueue.begin();
+        OMX_BUFFERHEADERTYPE *header = info->mHeader;
+
+ 
+         const uint8_t *data = header->pBuffer + header->nOffset;
+         size_t size = header->nFilledLen;
+ 
+         ogg_buffer buf;
+         ogg_reference ref;
+        oggpack_buffer bits;
+
+        makeBitReader(
+ (const uint8_t *)data + 7, size - 7,
+ &buf, &ref, &bits);
+
+ if (mInputBufferCount == 0) {
+            CHECK(mVi == NULL);
+            mVi = new vorbis_info;
+            vorbis_info_init(mVi);
+
+            CHECK_EQ(0, _vorbis_unpack_info(mVi, &bits));
+ } else {
+            CHECK_EQ(0, _vorbis_unpack_books(mVi, &bits));
+
+            CHECK(mState == NULL);
+            mState = new vorbis_dsp_state;
+            CHECK_EQ(0, vorbis_dsp_init(mState, mVi));
+
+            notify(OMX_EventPortSettingsChanged, 1, 0, NULL);
+            mOutputPortSettingsChange = AWAITING_DISABLED;
+ }
+
+        inQueue.erase(inQueue.begin());
+        info->mOwnedByUs = false;
+        notifyEmptyBufferDone(header);
+
+ ++mInputBufferCount;
+
+ return;
+ }
+
+ while ((!inQueue.empty() || (mSawInputEos && !mSignalledOutputEos)) && !outQueue.empty()) {
+ BufferInfo *inInfo = NULL;
+        OMX_BUFFERHEADERTYPE *inHeader = NULL;
+ if (!inQueue.empty()) {
+            inInfo = *inQueue.begin();
+            inHeader = inInfo->mHeader;
+ }
+
+ BufferInfo *outInfo = *outQueue.begin();
+        OMX_BUFFERHEADERTYPE *outHeader = outInfo->mHeader;
+
+ int32_t numPageSamples = 0;
+
+ if (inHeader) {
+ if (inHeader->nFlags & OMX_BUFFERFLAG_EOS) {
+                mSawInputEos = true;
+ }
+
+ if (inHeader->nFilledLen || !mSawInputEos) {
+                CHECK_GE(inHeader->nFilledLen, sizeof(numPageSamples));
+                memcpy(&numPageSamples,
+                       inHeader->pBuffer
+ + inHeader->nOffset + inHeader->nFilledLen - 4,
+ sizeof(numPageSamples));
+
+ if (inHeader->nOffset == 0) {
+                    mAnchorTimeUs = inHeader->nTimeStamp;
+                    mNumFramesOutput = 0;
+ }
+
+                inHeader->nFilledLen -= sizeof(numPageSamples);;
+ }
+ }
+
+ if (numPageSamples >= 0) {
+            mNumFramesLeftOnPage = numPageSamples;
+ }
+
+        ogg_buffer buf;
+        buf.data = inHeader ? inHeader->pBuffer + inHeader->nOffset : NULL;
+        buf.size = inHeader ? inHeader->nFilledLen : 0;
+        buf.refcount = 1;
+        buf.ptr.owner = NULL;
+
+        ogg_reference ref;
+        ref.buffer = &buf;
+        ref.begin = 0;
+        ref.length = buf.size;
+        ref.next = NULL;
+
+        ogg_packet pack;
+        pack.packet = &ref;
+        pack.bytes = ref.length;
+        pack.b_o_s = 0;
+        pack.e_o_s = 0;
+        pack.granulepos = 0;
+        pack.packetno = 0;
+
+ int numFrames = 0;
+
+        outHeader->nFlags = 0;
+ int err = vorbis_dsp_synthesis(mState, &pack, 1);
+ if (err != 0) {
+#if !defined(__arm__) && !defined(__aarch64__)
+            ALOGV(""vorbis_dsp_synthesis returned %d"", err);
+#else
+
+             ALOGW(""vorbis_dsp_synthesis returned %d"", err);
+ #endif
+         } else {
+             numFrames = vorbis_dsp_pcmout(
+                     mState, (int16_t *)outHeader->pBuffer,
+                    (kMaxNumSamplesPerBuffer / mVi->channels));
+ 
+             if (numFrames < 0) {
+                 ALOGE(""vorbis_dsp_pcmout returned %d"", numFrames);
+                numFrames = 0;
+ }
+ }
+
+ if (mNumFramesLeftOnPage >= 0) {
+ if (numFrames > mNumFramesLeftOnPage) {
+                ALOGV(""discarding %d frames at end of page"",
+                     numFrames - mNumFramesLeftOnPage);
+                numFrames = mNumFramesLeftOnPage;
+ if (mSawInputEos) {
+                    outHeader->nFlags = OMX_BUFFERFLAG_EOS;
+                    mSignalledOutputEos = true;
+ }
+ }
+            mNumFramesLeftOnPage -= numFrames;
+ }
+
+        outHeader->nFilledLen = numFrames * sizeof(int16_t) * mVi->channels;
+        outHeader->nOffset = 0;
+
+        outHeader->nTimeStamp =
+            mAnchorTimeUs
+ + (mNumFramesOutput * 1000000ll) / mVi->rate;
+
+        mNumFramesOutput += numFrames;
+
+ if (inHeader) {
+            inInfo->mOwnedByUs = false;
+            inQueue.erase(inQueue.begin());
+            inInfo = NULL;
+            notifyEmptyBufferDone(inHeader);
+            inHeader = NULL;
+ }
+
+        outInfo->mOwnedByUs = false;
+        outQueue.erase(outQueue.begin());
+        outInfo = NULL;
+        notifyFillBufferDone(outHeader);
+        outHeader = NULL;
+
+ ++mInputBufferCount;
+ }
+}
+",agree
+CVE-2016-2487,"void SoftAVC::drainOneOutputBuffer(int32_t picId, uint8_t* data) {
+     List<BufferInfo *> &outQueue = getPortQueue(kOutputPortIndex);
+     BufferInfo *outInfo = *outQueue.begin();
+    outQueue.erase(outQueue.begin());
+     OMX_BUFFERHEADERTYPE *outHeader = outInfo->mHeader;
+     OMX_BUFFERHEADERTYPE *header = mPicToHeaderMap.valueFor(picId);
+     outHeader->nTimeStamp = header->nTimeStamp;
+     outHeader->nFlags = header->nFlags;
+    outHeader->nFilledLen = mWidth * mHeight * 3 / 2;
+ 
+     uint8_t *dst = outHeader->pBuffer + outHeader->nOffset;
+     const uint8_t *srcY = data;
+ const uint8_t *srcU = srcY + mWidth * mHeight;
+ const uint8_t *srcV = srcU + mWidth * mHeight / 4;
+ size_t srcYStride = mWidth;
+ size_t srcUStride = mWidth / 2;
+ size_t srcVStride = srcUStride;
+    copyYV12FrameToOutputBuffer(dst, srcY, srcU, srcV, srcYStride, srcUStride, srcVStride);
+
+    mPicToHeaderMap.removeItem(picId);
+
+     delete header;
+     outInfo->mOwnedByUs = false;
+     notifyFillBufferDone(outHeader);
+ }
+",agree
+CVE-2018-6140,"void BrowserDevToolsAgentHost::AttachSession(DevToolsSession* session) {
+   session->SetBrowserOnly(true);
+   session->AddHandler(
+       base::WrapUnique(new protocol::TargetHandler(true /* browser_only */)));
+   if (only_discovery_)
+    return;
+ 
+   session->AddHandler(base::WrapUnique(new protocol::BrowserHandler()));
+   session->AddHandler(base::WrapUnique(new protocol::IOHandler(
+      GetIOContext())));
+  session->AddHandler(base::WrapUnique(new protocol::MemoryHandler()));
+  session->AddHandler(base::WrapUnique(new protocol::SecurityHandler()));
+  session->AddHandler(base::WrapUnique(new protocol::SystemInfoHandler()));
+  session->AddHandler(base::WrapUnique(new protocol::TetheringHandler(
+      socket_callback_, tethering_task_runner_)));
+  session->AddHandler(base::WrapUnique(new protocol::TracingHandler(
+       protocol::TracingHandler::Browser,
+       FrameTreeNode::kFrameTreeNodeInvalidId,
+       GetIOContext())));
+ }
+",agree
+CVE-2019-13106,"static int wait_for_fpga_config(void)
+{
+	int ret = 0, done;
+	/* approx 5 s */
+	u32 timeout = 500000;
+ 
+ 	printf(""PCIe FPGA config:"");
+ 	do {
+		done = qrio_get_gpio(GPIO_A, FPGA_DONE);
+ 		if (timeout-- == 0) {
+ 			printf("" FPGA_DONE timeout\n"");
+ 			ret = -EFAULT;
+			goto err_out;
+		}
+		udelay(10);
+	} while (!done);
+
+	printf("" done\n"");
+ 
+ err_out:
+ 	/* deactive CONF_SEL and give the CPU conf EEPROM access */
+	qrio_set_gpio(GPIO_A, CONF_SEL_L, 1);
+ 	toggle_fpga_eeprom_bus(true);
+ 
+ 	return ret;
+}
+",agree
+CVE-2016-2464,"bool mkvparser::Match(IMkvReader* pReader, long long& pos, unsigned long id_,
+                      unsigned char*& buf, size_t& buflen) {
+  assert(pReader);
+  assert(pos >= 0);
+  long long total, available;
+  long status = pReader->Length(&total, &available);
+  assert(status >= 0);
+  assert((total < 0) || (available <= total));
+  if (status < 0)
+     return false;
+ 
+  long len;
+  const long long id = ReadUInt(pReader, pos, len);
+  assert(id >= 0);
+  assert(len > 0);
+  assert(len <= 8);
+  assert((pos + len) <= available);
+ 
+  if ((unsigned long)id != id_)
+     return false;
+ 
+   pos += len;  // consume id
+ 
+  const long long size_ = ReadUInt(pReader, pos, len);
+  assert(size_ >= 0);
+  assert(len > 0);
+  assert(len <= 8);
+  assert((pos + len) <= available);
+ 
+   pos += len;  // consume length of size of payload
+  assert((pos + size_) <= available);
+ 
+  const long buflen_ = static_cast<long>(size_);
+ 
+  buf = new (std::nothrow) unsigned char[buflen_];
+  assert(buf);  // TODO
+ 
+   status = pReader->Read(pos, buflen_, buf);
+  assert(status == 0);  // TODO
+ 
+   buflen = buflen_;
+ 
+  pos += size_;  // consume size of payload
+   return true;
+ }
+",agree
+CVE-2016-2464,"bool mkvparser::Match(IMkvReader* pReader, long long& pos, unsigned long id_,
+                      long long& val) {
+  assert(pReader);
+  assert(pos >= 0);
+  long long total, available;
+  const long status = pReader->Length(&total, &available);
+  assert(status >= 0);
+  assert((total < 0) || (available <= total));
+  if (status < 0)
+     return false;
+ 
+  long len;
+ 
+  const long long id = ReadUInt(pReader, pos, len);
+  assert(id >= 0);
+  assert(len > 0);
+  assert(len <= 8);
+  assert((pos + len) <= available);
+ 
+  if ((unsigned long)id != id_)
+     return false;
+ 
+   pos += len;  // consume id
+ 
+   const long long size = ReadUInt(pReader, pos, len);
+  assert(size >= 0);
+  assert(size <= 8);
+  assert(len > 0);
+  assert(len <= 8);
+  assert((pos + len) <= available);
+ 
+   pos += len;  // consume length of size of payload
+ 
+   val = UnserializeUInt(pReader, pos, size);
+  assert(val >= 0);
+ 
+   pos += size;  // consume size of payload
+ 
+   return true;
+ }
+",agree
+CVE-2019-11811,"int ipmi_si_mem_setup(struct si_sm_io *io)
+{
+	unsigned long addr = io->addr_data;
+	int           mapsize, idx;
+
+ 	if (!addr)
+ 		return -ENODEV;
+ 
+	io->io_cleanup = mem_cleanup;
+ 	/*
+ 	 * Figure out the actual readb/readw/readl/etc routine to use based
+ 	 * upon the register size.
+	 */
+	switch (io->regsize) {
+	case 1:
+		io->inputb = intf_mem_inb;
+		io->outputb = intf_mem_outb;
+		break;
+	case 2:
+		io->inputb = intf_mem_inw;
+		io->outputb = intf_mem_outw;
+		break;
+	case 4:
+		io->inputb = intf_mem_inl;
+		io->outputb = intf_mem_outl;
+		break;
+#ifdef readq
+	case 8:
+		io->inputb = mem_inq;
+		io->outputb = mem_outq;
+		break;
+#endif
+	default:
+		dev_warn(io->dev, ""Invalid register size: %d\n"",
+			 io->regsize);
+		return -EINVAL;
+	}
+
+	/*
+	 * Some BIOSes reserve disjoint memory regions in their ACPI
+	 * tables.  This causes problems when trying to request the
+	 * entire region.  Therefore we must request each register
+	 * separately.
+	 */
+	for (idx = 0; idx < io->io_size; idx++) {
+		if (request_mem_region(addr + idx * io->regspacing,
+				       io->regsize, DEVICE_NAME) == NULL) {
+			/* Undo allocations */
+			mem_region_cleanup(io, idx);
+			return -EIO;
+		}
+	}
+
+	/*
+	 * Calculate the total amount of memory to claim.  This is an
+	 * unusual looking calculation, but it avoids claiming any
+	 * more memory than it has to.  It will claim everything
+	 * between the first address to the end of the last full
+	 * register.
+	 */
+	mapsize = ((io->io_size * io->regspacing)
+		   - (io->regspacing - io->regsize));
+	io->addr = ioremap(addr, mapsize);
+	if (io->addr == NULL) {
+ 		mem_region_cleanup(io, io->io_size);
+ 		return -EIO;
+ 	}
+ 	return 0;
+ }
+",neutral
+CVE-2019-13106,"void board_init_f_init_reserve(ulong base)
+{
+	struct global_data *gd_ptr;
+
+	/*
+	 * clear GD entirely and set it up.
+	 * Use gd_ptr, as gd may not be properly set yet.
+	 */
+
+	gd_ptr = (struct global_data *)base;
+	/* zero the area */
+	memset(gd_ptr, '\0', sizeof(*gd));
+	/* set GD unless architecture did it already */
+#if !defined(CONFIG_ARM)
+	arch_setup_gd(gd_ptr);
+#endif
+
+	if (CONFIG_IS_ENABLED(SYS_REPORT_STACK_F_USAGE))
+		board_init_f_init_stack_protection_addr(base);
+
+	/* next alloc will be higher by one GD plus 16-byte alignment */
+	base += roundup(sizeof(struct global_data), 16);
+
+	/*
+	 * record early malloc arena start.
+	 * Use gd as it is now properly set for all architectures.
+	 */
+
+ #if CONFIG_VAL(SYS_MALLOC_F_LEN)
+ 	/* go down one 'early malloc arena' */
+ 	gd->malloc_base = base;
+	/* next alloc will be higher by one 'early malloc arena' size */
+	base += CONFIG_VAL(SYS_MALLOC_F_LEN);
+ #endif
+ 
+ 	if (CONFIG_IS_ENABLED(SYS_REPORT_STACK_F_USAGE))
+		board_init_f_init_stack_protection();
+}
+",agree
+CVE-2016-2464,"int Track::Info::CopyStr(char* Info::*str, Info& dst_) const {
+ if (str == static_cast<char * Info::*>(NULL))
+ return -1;
+
+ char*& dst = dst_.*str;
+
+ if (dst) // should be NULL already
+ return -1;
+
+ const char* const src = this->*str;
+
+ if (src == NULL)
+ return 0;
+
+ 
+   const size_t len = strlen(src);
+ 
+  dst = new (std::nothrow) char[len + 1];
+ 
+   if (dst == NULL)
+     return -1;
+
+  strcpy(dst, src);
+
+ return 0;
+}
+",agree
+CVE-2019-13106,"int get_sda(void)
+{
+	return qrio_get_gpio(DEBLOCK_PORT1, DEBLOCK_SDA1);
+}
+",agree
+CVE-2017-5055," void PrintViewManager::RenderFrameDeleted(
+     content::RenderFrameHost* render_frame_host) {
+   if (render_frame_host == print_preview_rfh_)
+    print_preview_state_ = NOT_PREVIEWING;
+   PrintViewManagerBase::RenderFrameDeleted(render_frame_host);
+ }
+",agree
+CVE-2016-2464," long Chapters::Parse() {
+ IMkvReader* const pReader = m_pSegment->m_pReader;
+
+ long long pos = m_start; // payload start
+ const long long stop = pos + m_size; // payload stop
+
+ while (pos < stop) {
+ long long id, size;
+
+ long status = ParseElementHeader(pReader, pos, stop, id, size);
+
+ if (status < 0) // error
+ return status;
+
+ if (size == 0) // weird
+ continue;
+
+ if (id == 0x05B9) { // EditionEntry ID
+      status = ParseEdition(pos, size);
+
+ if (status < 0) // error
+ return status;
+
+     }
+ 
+     pos += size;
+    assert(pos <= stop);
+   }
+ 
+  assert(pos == stop);
+   return 0;
+ }
+",agree
+CVE-2016-2486,"void SoftMP3::onQueueFilled(OMX_U32 /* portIndex */) {
+ if (mSignalledError || mOutputPortSettingsChange != NONE) {
+ return;
+ }
+
+ List<BufferInfo *> &inQueue = getPortQueue(0);
+ List<BufferInfo *> &outQueue = getPortQueue(1);
+
+ while ((!inQueue.empty() || (mSawInputEos && !mSignalledOutputEos)) && !outQueue.empty()) {
+ BufferInfo *inInfo = NULL;
+        OMX_BUFFERHEADERTYPE *inHeader = NULL;
+ if (!inQueue.empty()) {
+            inInfo = *inQueue.begin();
+            inHeader = inInfo->mHeader;
+ }
+
+ BufferInfo *outInfo = *outQueue.begin();
+        OMX_BUFFERHEADERTYPE *outHeader = outInfo->mHeader;
+        outHeader->nFlags = 0;
+
+ if (inHeader) {
+ if (inHeader->nOffset == 0 && inHeader->nFilledLen) {
+                mAnchorTimeUs = inHeader->nTimeStamp;
+                mNumFramesOutput = 0;
+ }
+
+ if (inHeader->nFlags & OMX_BUFFERFLAG_EOS) {
+                mSawInputEos = true;
+ }
+
+            mConfig->pInputBuffer =
+                inHeader->pBuffer + inHeader->nOffset;
+
+            mConfig->inputBufferCurrentLength = inHeader->nFilledLen;
+ } else {
+            mConfig->pInputBuffer = NULL;
+            mConfig->inputBufferCurrentLength = 0;
+ }
+        mConfig->inputBufferMaxLength = 0;
+
+         mConfig->inputBufferUsedLength = 0;
+ 
+         mConfig->outputFrameSize = kOutputBufferSize / sizeof(int16_t);
+ 
+         mConfig->pOutputBuffer =
+             reinterpret_cast<int16_t *>(outHeader->pBuffer);
+
+        ERROR_CODE decoderErr;
+ if ((decoderErr = pvmp3_framedecoder(mConfig, mDecoderBuf))
+ != NO_DECODING_ERROR) {
+            ALOGV(""mp3 decoder returned error %d"", decoderErr);
+
+ if (decoderErr != NO_ENOUGH_MAIN_DATA_ERROR
+ && decoderErr != SIDE_INFO_ERROR) {
+                ALOGE(""mp3 decoder returned error %d"", decoderErr);
+
+                notify(OMX_EventError, OMX_ErrorUndefined, decoderErr, NULL);
+                mSignalledError = true;
+ return;
+ }
+
+ if (mConfig->outputFrameSize == 0) {
+                mConfig->outputFrameSize = kOutputBufferSize / sizeof(int16_t);
+ }
+
+ if (decoderErr == NO_ENOUGH_MAIN_DATA_ERROR && mSawInputEos) {
+ if (!mIsFirst) {
+                    outHeader->nOffset = 0;
+                    outHeader->nFilledLen = kPVMP3DecoderDelay * mNumChannels * sizeof(int16_t);
+
+                    memset(outHeader->pBuffer, 0, outHeader->nFilledLen);
+ }
+                outHeader->nFlags = OMX_BUFFERFLAG_EOS;
+                mSignalledOutputEos = true;
+ } else {
+
+                ALOGV_IF(mIsFirst, ""insufficient data for first frame, sending silence"");
+                memset(outHeader->pBuffer,
+ 0,
+                       mConfig->outputFrameSize * sizeof(int16_t));
+
+ if (inHeader) {
+                    mConfig->inputBufferUsedLength = inHeader->nFilledLen;
+ }
+ }
+ } else if (mConfig->samplingRate != mSamplingRate
+ || mConfig->num_channels != mNumChannels) {
+            mSamplingRate = mConfig->samplingRate;
+            mNumChannels = mConfig->num_channels;
+
+            notify(OMX_EventPortSettingsChanged, 1, 0, NULL);
+            mOutputPortSettingsChange = AWAITING_DISABLED;
+ return;
+ }
+
+ if (mIsFirst) {
+            mIsFirst = false;
+            outHeader->nOffset =
+                kPVMP3DecoderDelay * mNumChannels * sizeof(int16_t);
+
+            outHeader->nFilledLen =
+                mConfig->outputFrameSize * sizeof(int16_t) - outHeader->nOffset;
+ } else if (!mSignalledOutputEos) {
+            outHeader->nOffset = 0;
+            outHeader->nFilledLen = mConfig->outputFrameSize * sizeof(int16_t);
+ }
+
+        outHeader->nTimeStamp =
+            mAnchorTimeUs + (mNumFramesOutput * 1000000ll) / mSamplingRate;
+
+ if (inHeader) {
+            CHECK_GE(inHeader->nFilledLen, mConfig->inputBufferUsedLength);
+
+            inHeader->nOffset += mConfig->inputBufferUsedLength;
+            inHeader->nFilledLen -= mConfig->inputBufferUsedLength;
+
+
+ if (inHeader->nFilledLen == 0) {
+                inInfo->mOwnedByUs = false;
+                inQueue.erase(inQueue.begin());
+                inInfo = NULL;
+                notifyEmptyBufferDone(inHeader);
+                inHeader = NULL;
+ }
+ }
+
+        mNumFramesOutput += mConfig->outputFrameSize / mNumChannels;
+
+        outInfo->mOwnedByUs = false;
+        outQueue.erase(outQueue.begin());
+        outInfo = NULL;
+        notifyFillBufferDone(outHeader);
+        outHeader = NULL;
+ }
+}
+",agree
+CVE-2016-2464," long long EBMLHeader::Parse(IMkvReader* pReader, long long& pos) {
+  assert(pReader);
+ 
+   long long total, available;
+ 
+ long status = pReader->Length(&total, &available);
+
+ if (status < 0) // error
+ return status;
+
+  pos = 0;
+ long long end = (available >= 1024) ? 1024 : available;
+
+ for (;;) {
+ unsigned char b = 0;
+
+ while (pos < end) {
+      status = pReader->Read(pos, 1, &b);
+
+ if (status < 0) // error
+ return status;
+
+ if (b == 0x1A)
+ break;
+
+ ++pos;
+ }
+
+ if (b != 0x1A) {
+ if (pos >= 1024)
+ return E_FILE_FORMAT_INVALID; // don't bother looking anymore
+
+ if ((total >= 0) && ((total - available) < 5))
+ return E_FILE_FORMAT_INVALID;
+
+ return available + 5; // 5 = 4-byte ID + 1st byte of size
+ }
+
+ if ((total >= 0) && ((total - pos) < 5))
+ return E_FILE_FORMAT_INVALID;
+
+ if ((available - pos) < 5)
+ return pos + 5; // try again later
+
+ long len;
+
+ const long long result = ReadUInt(pReader, pos, len);
+
+ if (result < 0) // error
+ return result;
+
+ if (result == 0x0A45DFA3) { // EBML Header ID
+      pos += len; // consume ID
+ break;
+ }
+
+ ++pos; // throw away just the 0x1A byte, and try again
+ }
+
+
+
+ long len;
+ long long result = GetUIntLength(pReader, pos, len);
+
+ if (result < 0) // error
+ return result;
+
+
+   if (result > 0)  // need more data
+     return result;
+ 
+  assert(len > 0);
+  assert(len <= 8);
+ 
+   if ((total >= 0) && ((total - pos) < len))
+     return E_FILE_FORMAT_INVALID;
+
+ if ((available - pos) < len)
+ return pos + len; // try again later
+
+
+  result = ReadUInt(pReader, pos, len);
+
+ if (result < 0) // error
+ return result;
+
+  pos += len; // consume size field
+
+
+ if ((total >= 0) && ((total - pos) < result))
+ return E_FILE_FORMAT_INVALID;
+
+ if ((available - pos) < result)
+ return pos + result;
+
+  end = pos + result;
+
+ Init();
+
+ while (pos < end) {
+ long long id, size;
+
+    status = ParseElementHeader(pReader, pos, end, id, size);
+
+ if (status < 0) // error
+ return status;
+
+ if (size == 0) // weird
+ return E_FILE_FORMAT_INVALID;
+
+ if (id == 0x0286) { // version
+      m_version = UnserializeUInt(pReader, pos, size);
+
+ if (m_version <= 0)
+ return E_FILE_FORMAT_INVALID;
+ } else if (id == 0x02F7) { // read version
+      m_readVersion = UnserializeUInt(pReader, pos, size);
+
+ if (m_readVersion <= 0)
+ return E_FILE_FORMAT_INVALID;
+ } else if (id == 0x02F2) { // max id length
+      m_maxIdLength = UnserializeUInt(pReader, pos, size);
+
+ if (m_maxIdLength <= 0)
+ return E_FILE_FORMAT_INVALID;
+ } else if (id == 0x02F3) { // max size length
+      m_maxSizeLength = UnserializeUInt(pReader, pos, size);
+
+ if (m_maxSizeLength <= 0)
+ return E_FILE_FORMAT_INVALID;
+ } else if (id == 0x0282) { // doctype
+ if (m_docType)
+ return E_FILE_FORMAT_INVALID;
+
+      status = UnserializeString(pReader, pos, size, m_docType);
+
+ if (status) // error
+ return status;
+ } else if (id == 0x0287) { // doctype version
+      m_docTypeVersion = UnserializeUInt(pReader, pos, size);
+
+ if (m_docTypeVersion <= 0)
+ return E_FILE_FORMAT_INVALID;
+ } else if (id == 0x0285) { // doctype read version
+      m_docTypeReadVersion = UnserializeUInt(pReader, pos, size);
+
+ if (m_docTypeReadVersion <= 0)
+ return E_FILE_FORMAT_INVALID;
+ }
+
+
+     pos += size;
+   }
+ 
+  assert(pos == end);
+   return 0;
+ }
+",agree
+CVE-2018-6651,"UNCURL_EXPORT int32_t uncurl_ws_accept(struct uncurl_conn *ucc, char **origins, int32_t n_origins)
+{
+	int32_t e;
+
+	e = uncurl_read_header(ucc);
+	if (e != UNCURL_OK) return e;
+
+	uncurl_set_header_str(ucc, ""Upgrade"", ""websocket"");
+	uncurl_set_header_str(ucc, ""Connection"", ""Upgrade"");
+
+	char *origin = NULL;
+ 	e = uncurl_get_header_str(ucc, ""Origin"", &origin);
+ 	if (e != UNCURL_OK) return e;
+ 
+ 	bool origin_ok = false;
+	for (int32_t x = 0; x < n_origins; x++)
+		if (strstr(origin, origins[x])) {origin_ok = true; break;}
+ 
+ 	if (!origin_ok) return UNCURL_WS_ERR_ORIGIN;
+ 
+	char *sec_key = NULL;
+	e = uncurl_get_header_str(ucc, ""Sec-WebSocket-Key"", &sec_key);
+	if (e != UNCURL_OK) return e;
+
+	char *accept_key = ws_create_accept_key(sec_key);
+	uncurl_set_header_str(ucc, ""Sec-WebSocket-Accept"", accept_key);
+	free(accept_key);
+
+	e = uncurl_write_header(ucc, ""101"", ""Switching Protocols"", UNCURL_RESPONSE);
+	if (e != UNCURL_OK) return e;
+
+	ucc->ws_mask = 0;
+
+	return UNCURL_OK;
+}
+",agree
+CVE-2016-2464,"long Chapters::Atom::Parse(IMkvReader* pReader, long long pos, long long size) {
+ const long long stop = pos + size;
+
+ while (pos < stop) {
+ long long id, size;
+
+ long status = ParseElementHeader(pReader, pos, stop, id, size);
+
+ if (status < 0) // error
+ return status;
+
+ if (size == 0) // weird
+ continue;
+
+ if (id == 0x00) { // Display ID
+      status = ParseDisplay(pReader, pos, size);
+
+ if (status < 0) // error
+ return status;
+ } else if (id == 0x1654) { // StringUID ID
+      status = UnserializeString(pReader, pos, size, m_string_uid);
+
+ if (status < 0) // error
+ return status;
+ } else if (id == 0x33C4) { // UID ID
+ long long val;
+      status = UnserializeInt(pReader, pos, size, val);
+
+ if (status < 0) // error
+ return status;
+
+      m_uid = static_cast<unsigned long long>(val);
+ } else if (id == 0x11) { // TimeStart ID
+ const long long val = UnserializeUInt(pReader, pos, size);
+
+ if (val < 0) // error
+ return static_cast<long>(val);
+
+      m_start_timecode = val;
+ } else if (id == 0x12) { // TimeEnd ID
+ const long long val = UnserializeUInt(pReader, pos, size);
+
+ if (val < 0) // error
+ return static_cast<long>(val);
+
+      m_stop_timecode = val;
+
+     }
+ 
+     pos += size;
+    assert(pos <= stop);
+   }
+ 
+  assert(pos == stop);
+   return 0;
+ }
+",neutral
+CVE-2016-2464,"long AudioTrack::Parse(Segment* pSegment, const Info& info,
+ long long element_start, long long element_size,
+ AudioTrack*& pResult) {
+ if (pResult)
+ return -1;
+
+ if (info.type != Track::kAudio)
+ return -1;
+
+ IMkvReader* const pReader = pSegment->m_pReader;
+
+ const Settings& s = info.settings;
+  assert(s.start >= 0);
+  assert(s.size >= 0);
+
+ long long pos = s.start;
+  assert(pos >= 0);
+
+ const long long stop = pos + s.size;
+
+ double rate = 8000.0; // MKV default
+ long long channels = 1;
+ long long bit_depth = 0;
+
+ while (pos < stop) {
+ long long id, size;
+
+ long status = ParseElementHeader(pReader, pos, stop, id, size);
+
+ if (status < 0) // error
+ return status;
+
+ if (id == 0x35) { // Sample Rate
+      status = UnserializeFloat(pReader, pos, size, rate);
+
+ if (status < 0)
+ return status;
+
+ if (rate <= 0)
+ return E_FILE_FORMAT_INVALID;
+ } else if (id == 0x1F) { // Channel Count
+      channels = UnserializeUInt(pReader, pos, size);
+
+ if (channels <= 0)
+ return E_FILE_FORMAT_INVALID;
+ } else if (id == 0x2264) { // Bit Depth
+      bit_depth = UnserializeUInt(pReader, pos, size);
+
+ if (bit_depth <= 0)
+ return E_FILE_FORMAT_INVALID;
+
+     }
+ 
+     pos += size;  // consume payload
+    assert(pos <= stop);
+   }
+ 
+  assert(pos == stop);
+ 
+   AudioTrack* const pTrack =
+       new (std::nothrow) AudioTrack(pSegment, element_start, element_size);
+
+ if (pTrack == NULL)
+ return -1; // generic error
+
+ const int status = info.Copy(pTrack->m_info);
+
+ if (status) {
+ delete pTrack;
+ return status;
+ }
+
+  pTrack->m_rate = rate;
+  pTrack->m_channels = channels;
+  pTrack->m_bitDepth = bit_depth;
+
+  pResult = pTrack;
+ return 0; // success
+}
+",agree
+CVE-2016-2464,"long mkvparser::UnserializeFloat(IMkvReader* pReader, long long pos,
+                                 long long size_, double& result) {
+  assert(pReader);
+  assert(pos >= 0);
+  if ((size_ != 4) && (size_ != 8))
+     return E_FILE_FORMAT_INVALID;
+ 
+   const long size = static_cast<long>(size_);
+
+ unsigned char buf[8];
+
+ const int status = pReader->Read(pos, size, buf);
+
+ if (status < 0) // error
+ return status;
+
+ if (size == 4) {
+ union {
+ float f;
+ unsigned long ff;
+ };
+
+    ff = 0;
+
+ for (int i = 0;;) {
+      ff |= buf[i];
+
+ if (++i >= 4)
+ break;
+
+      ff <<= 8;
+ }
+
+ 
+     result = f;
+   } else {
+    assert(size == 8);
+     union {
+       double d;
+       unsigned long long dd;
+ };
+
+    dd = 0;
+
+ for (int i = 0;;) {
+      dd |= buf[i];
+
+ if (++i >= 8)
+ break;
+
+      dd <<= 8;
+ }
+
+
+     result = d;
+   }
+ 
+   return 0;
+ }
+",agree
+CVE-2018-6140,"void SharedWorkerDevToolsAgentHost::AttachSession(DevToolsSession* session) {
+   session->AddHandler(std::make_unique<protocol::InspectorHandler>());
+   session->AddHandler(std::make_unique<protocol::NetworkHandler>(GetId()));
+   session->AddHandler(std::make_unique<protocol::SchemaHandler>());
+   session->SetRenderer(worker_host_ ? worker_host_->process_id() : -1, nullptr);
+   if (state_ == WORKER_READY)
+     session->AttachToAgent(EnsureAgent());
+ }
+",neutral
+CVE-2017-13715,"bool __skb_flow_dissect(const struct sk_buff *skb,
+			struct flow_dissector *flow_dissector,
+			void *target_container,
+			void *data, __be16 proto, int nhoff, int hlen)
+{
+	struct flow_dissector_key_control *key_control;
+	struct flow_dissector_key_basic *key_basic;
+	struct flow_dissector_key_addrs *key_addrs;
+	struct flow_dissector_key_ports *key_ports;
+ 	struct flow_dissector_key_tags *key_tags;
+ 	struct flow_dissector_key_keyid *key_keyid;
+ 	u8 ip_proto = 0;
+ 
+ 	if (!data) {
+ 		data = skb->data;
+		proto = skb->protocol;
+		nhoff = skb_network_offset(skb);
+		hlen = skb_headlen(skb);
+	}
+
+	/* It is ensured by skb_flow_dissector_init() that control key will
+	 * be always present.
+	 */
+	key_control = skb_flow_dissector_target(flow_dissector,
+						FLOW_DISSECTOR_KEY_CONTROL,
+						target_container);
+
+	/* It is ensured by skb_flow_dissector_init() that basic key will
+	 * be always present.
+	 */
+	key_basic = skb_flow_dissector_target(flow_dissector,
+					      FLOW_DISSECTOR_KEY_BASIC,
+					      target_container);
+
+	if (skb_flow_dissector_uses_key(flow_dissector,
+					FLOW_DISSECTOR_KEY_ETH_ADDRS)) {
+		struct ethhdr *eth = eth_hdr(skb);
+		struct flow_dissector_key_eth_addrs *key_eth_addrs;
+
+		key_eth_addrs = skb_flow_dissector_target(flow_dissector,
+							  FLOW_DISSECTOR_KEY_ETH_ADDRS,
+							  target_container);
+		memcpy(key_eth_addrs, &eth->h_dest, sizeof(*key_eth_addrs));
+	}
+
+again:
+	switch (proto) {
+	case htons(ETH_P_IP): {
+		const struct iphdr *iph;
+		struct iphdr _iph;
+ ip:
+ 		iph = __skb_header_pointer(skb, nhoff, sizeof(_iph), data, hlen, &_iph);
+ 		if (!iph || iph->ihl < 5)
+			return false;
+ 		nhoff += iph->ihl * 4;
+ 
+ 		ip_proto = iph->protocol;
+		if (ip_is_fragment(iph))
+			ip_proto = 0;
+
+		if (!skb_flow_dissector_uses_key(flow_dissector,
+						 FLOW_DISSECTOR_KEY_IPV4_ADDRS))
+			break;
+
+		key_addrs = skb_flow_dissector_target(flow_dissector,
+			      FLOW_DISSECTOR_KEY_IPV4_ADDRS, target_container);
+		memcpy(&key_addrs->v4addrs, &iph->saddr,
+		       sizeof(key_addrs->v4addrs));
+		key_control->addr_type = FLOW_DISSECTOR_KEY_IPV4_ADDRS;
+		break;
+	}
+	case htons(ETH_P_IPV6): {
+		const struct ipv6hdr *iph;
+		struct ipv6hdr _iph;
+		__be32 flow_label;
+
+ ipv6:
+ 		iph = __skb_header_pointer(skb, nhoff, sizeof(_iph), data, hlen, &_iph);
+ 		if (!iph)
+			return false;
+ 
+ 		ip_proto = iph->nexthdr;
+ 		nhoff += sizeof(struct ipv6hdr);
+
+		if (skb_flow_dissector_uses_key(flow_dissector,
+						FLOW_DISSECTOR_KEY_IPV6_ADDRS)) {
+			struct flow_dissector_key_ipv6_addrs *key_ipv6_addrs;
+
+			key_ipv6_addrs = skb_flow_dissector_target(flow_dissector,
+								   FLOW_DISSECTOR_KEY_IPV6_ADDRS,
+								   target_container);
+
+			memcpy(key_ipv6_addrs, &iph->saddr, sizeof(*key_ipv6_addrs));
+			key_control->addr_type = FLOW_DISSECTOR_KEY_IPV6_ADDRS;
+		}
+
+		flow_label = ip6_flowlabel(iph);
+		if (flow_label) {
+			if (skb_flow_dissector_uses_key(flow_dissector,
+				FLOW_DISSECTOR_KEY_FLOW_LABEL)) {
+				key_tags = skb_flow_dissector_target(flow_dissector,
+								     FLOW_DISSECTOR_KEY_FLOW_LABEL,
+								     target_container);
+				key_tags->flow_label = ntohl(flow_label);
+			}
+		}
+
+		break;
+	}
+	case htons(ETH_P_8021AD):
+	case htons(ETH_P_8021Q): {
+		const struct vlan_hdr *vlan;
+		struct vlan_hdr _vlan;
+ 
+ 		vlan = __skb_header_pointer(skb, nhoff, sizeof(_vlan), data, hlen, &_vlan);
+ 		if (!vlan)
+			return false;
+ 
+ 		if (skb_flow_dissector_uses_key(flow_dissector,
+ 						FLOW_DISSECTOR_KEY_VLANID)) {
+			key_tags = skb_flow_dissector_target(flow_dissector,
+							     FLOW_DISSECTOR_KEY_VLANID,
+							     target_container);
+
+			key_tags->vlan_id = skb_vlan_tag_get_id(skb);
+		}
+
+		proto = vlan->h_vlan_encapsulated_proto;
+		nhoff += sizeof(*vlan);
+		goto again;
+	}
+	case htons(ETH_P_PPP_SES): {
+		struct {
+			struct pppoe_hdr hdr;
+			__be16 proto;
+ 		} *hdr, _hdr;
+ 		hdr = __skb_header_pointer(skb, nhoff, sizeof(_hdr), data, hlen, &_hdr);
+ 		if (!hdr)
+			return false;
+ 		proto = hdr->proto;
+ 		nhoff += PPPOE_SES_HLEN;
+ 		switch (proto) {
+		case htons(PPP_IP):
+			goto ip;
+ 		case htons(PPP_IPV6):
+ 			goto ipv6;
+ 		default:
+			return false;
+ 		}
+ 	}
+ 	case htons(ETH_P_TIPC): {
+		struct {
+			__be32 pre[3];
+			__be32 srcnode;
+ 		} *hdr, _hdr;
+ 		hdr = __skb_header_pointer(skb, nhoff, sizeof(_hdr), data, hlen, &_hdr);
+ 		if (!hdr)
+			return false;
+		key_basic->n_proto = proto;
+		key_control->thoff = (u16)nhoff;
+ 
+ 		if (skb_flow_dissector_uses_key(flow_dissector,
+ 						FLOW_DISSECTOR_KEY_TIPC_ADDRS)) {
+			key_addrs = skb_flow_dissector_target(flow_dissector,
+							      FLOW_DISSECTOR_KEY_TIPC_ADDRS,
+							      target_container);
+ 			key_addrs->tipcaddrs.srcnode = hdr->srcnode;
+ 			key_control->addr_type = FLOW_DISSECTOR_KEY_TIPC_ADDRS;
+ 		}
+		return true;
+ 	}
+ 
+ 	case htons(ETH_P_MPLS_UC):
+	case htons(ETH_P_MPLS_MC): {
+		struct mpls_label *hdr, _hdr[2];
+mpls:
+ 		hdr = __skb_header_pointer(skb, nhoff, sizeof(_hdr), data,
+ 					   hlen, &_hdr);
+ 		if (!hdr)
+			return false;
+ 
+ 		if ((ntohl(hdr[0].entry) & MPLS_LS_LABEL_MASK) >>
+ 		     MPLS_LS_LABEL_SHIFT == MPLS_LABEL_ENTROPY) {
+			if (skb_flow_dissector_uses_key(flow_dissector,
+							FLOW_DISSECTOR_KEY_MPLS_ENTROPY)) {
+				key_keyid = skb_flow_dissector_target(flow_dissector,
+								      FLOW_DISSECTOR_KEY_MPLS_ENTROPY,
+								      target_container);
+				key_keyid->keyid = hdr[1].entry &
+ 					htonl(MPLS_LS_LABEL_MASK);
+ 			}
+ 
+			key_basic->n_proto = proto;
+			key_basic->ip_proto = ip_proto;
+			key_control->thoff = (u16)nhoff;
+			return true;
+ 		}
+ 
+		return true;
+ 	}
+ 
+ 	case htons(ETH_P_FCOE):
+ 		key_control->thoff = (u16)(nhoff + FCOE_HEADER_LEN);
+ 		/* fall through */
+ 	default:
+		return false;
+ 	}
+ 
+ ip_proto_again:
+	switch (ip_proto) {
+	case IPPROTO_GRE: {
+		struct gre_hdr {
+			__be16 flags;
+			__be16 proto;
+		} *hdr, _hdr;
+ 
+ 		hdr = __skb_header_pointer(skb, nhoff, sizeof(_hdr), data, hlen, &_hdr);
+ 		if (!hdr)
+			return false;
+ 		/*
+ 		 * Only look inside GRE if version zero and no
+ 		 * routing
+		 */
+		if (hdr->flags & (GRE_VERSION | GRE_ROUTING))
+			break;
+
+		proto = hdr->proto;
+		nhoff += 4;
+		if (hdr->flags & GRE_CSUM)
+			nhoff += 4;
+		if (hdr->flags & GRE_KEY) {
+			const __be32 *keyid;
+			__be32 _keyid;
+
+			keyid = __skb_header_pointer(skb, nhoff, sizeof(_keyid),
+ 						     data, hlen, &_keyid);
+ 
+ 			if (!keyid)
+				return false;
+ 
+ 			if (skb_flow_dissector_uses_key(flow_dissector,
+ 							FLOW_DISSECTOR_KEY_GRE_KEYID)) {
+				key_keyid = skb_flow_dissector_target(flow_dissector,
+								      FLOW_DISSECTOR_KEY_GRE_KEYID,
+								      target_container);
+				key_keyid->keyid = *keyid;
+			}
+			nhoff += 4;
+		}
+		if (hdr->flags & GRE_SEQ)
+			nhoff += 4;
+		if (proto == htons(ETH_P_TEB)) {
+			const struct ethhdr *eth;
+			struct ethhdr _eth;
+
+			eth = __skb_header_pointer(skb, nhoff,
+ 						   sizeof(_eth),
+ 						   data, hlen, &_eth);
+ 			if (!eth)
+				return false;
+ 			proto = eth->h_proto;
+ 			nhoff += sizeof(*eth);
+ 		}
+		goto again;
+	}
+	case NEXTHDR_HOP:
+	case NEXTHDR_ROUTING:
+	case NEXTHDR_DEST: {
+		u8 _opthdr[2], *opthdr;
+
+		if (proto != htons(ETH_P_IPV6))
+			break;
+
+ 		opthdr = __skb_header_pointer(skb, nhoff, sizeof(_opthdr),
+ 					      data, hlen, &_opthdr);
+ 		if (!opthdr)
+			return false;
+ 
+ 		ip_proto = opthdr[0];
+ 		nhoff += (opthdr[1] + 1) << 3;
+
+		goto ip_proto_again;
+	}
+	case IPPROTO_IPIP:
+		proto = htons(ETH_P_IP);
+		goto ip;
+	case IPPROTO_IPV6:
+		proto = htons(ETH_P_IPV6);
+		goto ipv6;
+	case IPPROTO_MPLS:
+		proto = htons(ETH_P_MPLS_UC);
+		goto mpls;
+	default:
+ 		break;
+ 	}
+ 
+	key_basic->n_proto = proto;
+	key_basic->ip_proto = ip_proto;
+	key_control->thoff = (u16)nhoff;
+ 	if (skb_flow_dissector_uses_key(flow_dissector,
+ 					FLOW_DISSECTOR_KEY_PORTS)) {
+ 		key_ports = skb_flow_dissector_target(flow_dissector,
+						      FLOW_DISSECTOR_KEY_PORTS,
+						      target_container);
+		key_ports->ports = __skb_flow_get_ports(skb, nhoff, ip_proto,
+ 							data, hlen);
+ 	}
+ 
+	return true;
+ }
+",agree
+CVE-2016-2487,"void SoftHEVC::setDecodeArgs(ivd_video_decode_ip_t *ps_dec_ip,
+         ivd_video_decode_op_t *ps_dec_op,
+         OMX_BUFFERHEADERTYPE *inHeader,
+         OMX_BUFFERHEADERTYPE *outHeader,
+         size_t timeStampIx) {
+     size_t sizeY = outputBufferWidth() * outputBufferHeight();
+     size_t sizeUV;
+    uint8_t *pBuf;
+ 
+     ps_dec_ip->u4_size = sizeof(ivd_video_decode_ip_t);
+     ps_dec_op->u4_size = sizeof(ivd_video_decode_op_t);
+
+    ps_dec_ip->e_cmd = IVD_CMD_VIDEO_DECODE;
+
+ /* When in flush and after EOS with zero byte input,
+     * inHeader is set to zero. Hence check for non-null */
+ if (inHeader) {
+        ps_dec_ip->u4_ts = timeStampIx;
+        ps_dec_ip->pv_stream_buffer = inHeader->pBuffer
+ + inHeader->nOffset;
+        ps_dec_ip->u4_num_Bytes = inHeader->nFilledLen;
+ } else {
+        ps_dec_ip->u4_ts = 0;
+        ps_dec_ip->pv_stream_buffer = NULL;
+
+         ps_dec_ip->u4_num_Bytes = 0;
+     }
+ 
+    if (outHeader) {
+        pBuf = outHeader->pBuffer;
+    } else {
+        pBuf = mFlushOutBuffer;
+    }
+     sizeUV = sizeY / 4;
+     ps_dec_ip->s_out_buffer.u4_min_out_buf_size[0] = sizeY;
+     ps_dec_ip->s_out_buffer.u4_min_out_buf_size[1] = sizeUV;
+     ps_dec_ip->s_out_buffer.u4_min_out_buf_size[2] = sizeUV;
+ 
+     ps_dec_ip->s_out_buffer.pu1_bufs[0] = pBuf;
+     ps_dec_ip->s_out_buffer.pu1_bufs[1] = pBuf + sizeY;
+     ps_dec_ip->s_out_buffer.pu1_bufs[2] = pBuf + sizeY + sizeUV;
+     ps_dec_ip->s_out_buffer.u4_num_bufs = 3;
+    return;
+ }
+",agree
+CVE-2016-2464,"long SeekHead::Parse() {
+ IMkvReader* const pReader = m_pSegment->m_pReader;
+
+ long long pos = m_start;
+ const long long stop = m_start + m_size;
+
+
+ int entry_count = 0;
+ int void_element_count = 0;
+
+ while (pos < stop) {
+ long long id, size;
+
+ const long status = ParseElementHeader(pReader, pos, stop, id, size);
+
+ if (status < 0) // error
+ return status;
+
+ if (id == 0x0DBB) // SeekEntry ID
+ ++entry_count;
+ else if (id == 0x6C) // Void ID
+
+       ++void_element_count;
+ 
+     pos += size;  // consume payload
+    assert(pos <= stop);
+   }
+ 
+  assert(pos == stop);
+ 
+   m_entries = new (std::nothrow) Entry[entry_count];
+ 
+ if (m_entries == NULL)
+ return -1;
+
+  m_void_elements = new (std::nothrow) VoidElement[void_element_count];
+
+ if (m_void_elements == NULL)
+ return -1;
+
+
+ Entry* pEntry = m_entries;
+ VoidElement* pVoidElement = m_void_elements;
+
+  pos = m_start;
+
+ while (pos < stop) {
+ const long long idpos = pos;
+
+ long long id, size;
+
+ const long status = ParseElementHeader(pReader, pos, stop, id, size);
+
+ if (status < 0) // error
+ return status;
+
+ if (id == 0x0DBB) { // SeekEntry ID
+ if (ParseEntry(pReader, pos, size, pEntry)) {
+ Entry& e = *pEntry++;
+
+        e.element_start = idpos;
+        e.element_size = (pos + size) - idpos;
+ }
+ } else if (id == 0x6C) { // Void ID
+ VoidElement& e = *pVoidElement++;
+
+      e.element_start = idpos;
+      e.element_size = (pos + size) - idpos;
+
+     }
+ 
+     pos += size;  // consume payload
+    assert(pos <= stop);
+   }
+ 
+  assert(pos == stop);
+ 
+   ptrdiff_t count_ = ptrdiff_t(pEntry - m_entries);
+   assert(count_ >= 0);
+  assert(count_ <= entry_count);
+
+  m_entry_count = static_cast<int>(count_);
+
+  count_ = ptrdiff_t(pVoidElement - m_void_elements);
+  assert(count_ >= 0);
+  assert(count_ <= void_element_count);
+
+  m_void_element_count = static_cast<int>(count_);
+
+ return 0;
+}
+",agree
+CVE-2016-2487,"void SoftOpus::onQueueFilled(OMX_U32 portIndex) {
+ List<BufferInfo *> &inQueue = getPortQueue(0);
+ List<BufferInfo *> &outQueue = getPortQueue(1);
+
+ if (mOutputPortSettingsChange != NONE) {
+ return;
+ }
+
+ if (portIndex == 0 && mInputBufferCount < 3) {
+ BufferInfo *info = *inQueue.begin();
+        OMX_BUFFERHEADERTYPE *header = info->mHeader;
+
+ const uint8_t *data = header->pBuffer + header->nOffset;
+ size_t size = header->nFilledLen;
+
+ if (mInputBufferCount == 0) {
+            CHECK(mHeader == NULL);
+            mHeader = new OpusHeader();
+            memset(mHeader, 0, sizeof(*mHeader));
+ if (!ParseOpusHeader(data, size, mHeader)) {
+                ALOGV(""Parsing Opus Header failed."");
+                notify(OMX_EventError, OMX_ErrorUndefined, 0, NULL);
+ return;
+ }
+
+ uint8_t channel_mapping[kMaxChannels] = {0};
+ if (mHeader->channels <= kMaxChannelsWithDefaultLayout) {
+                memcpy(&channel_mapping,
+                       kDefaultOpusChannelLayout,
+                       kMaxChannelsWithDefaultLayout);
+ } else {
+                memcpy(&channel_mapping,
+                       mHeader->stream_map,
+                       mHeader->channels);
+ }
+
+ int status = OPUS_INVALID_STATE;
+            mDecoder = opus_multistream_decoder_create(kRate,
+                                                       mHeader->channels,
+                                                       mHeader->num_streams,
+                                                       mHeader->num_coupled,
+                                                       channel_mapping,
+ &status);
+ if (!mDecoder || status != OPUS_OK) {
+                ALOGV(""opus_multistream_decoder_create failed status=%s"",
+                      opus_strerror(status));
+                notify(OMX_EventError, OMX_ErrorUndefined, 0, NULL);
+ return;
+ }
+            status =
+                opus_multistream_decoder_ctl(mDecoder,
+                                             OPUS_SET_GAIN(mHeader->gain_db));
+ if (status != OPUS_OK) {
+                ALOGV(""Failed to set OPUS header gain; status=%s"",
+                      opus_strerror(status));
+                notify(OMX_EventError, OMX_ErrorUndefined, 0, NULL);
+ return;
+ }
+ } else if (mInputBufferCount == 1) {
+            mCodecDelay = ns_to_samples(
+ *(reinterpret_cast<int64_t*>(header->pBuffer +
+                                                           header->nOffset)),
+                              kRate);
+            mSamplesToDiscard = mCodecDelay;
+ } else {
+            mSeekPreRoll = ns_to_samples(
+ *(reinterpret_cast<int64_t*>(header->pBuffer +
+                                                            header->nOffset)),
+                               kRate);
+            notify(OMX_EventPortSettingsChanged, 1, 0, NULL);
+            mOutputPortSettingsChange = AWAITING_DISABLED;
+ }
+
+        inQueue.erase(inQueue.begin());
+        info->mOwnedByUs = false;
+        notifyEmptyBufferDone(header);
+ ++mInputBufferCount;
+ return;
+ }
+
+ while (!inQueue.empty() && !outQueue.empty()) {
+ BufferInfo *inInfo = *inQueue.begin();
+        OMX_BUFFERHEADERTYPE *inHeader = inInfo->mHeader;
+
+ if (inHeader->nFlags & OMX_BUFFERFLAG_CODECCONFIG) {
+            inQueue.erase(inQueue.begin());
+            inInfo->mOwnedByUs = false;
+            notifyEmptyBufferDone(inHeader);
+ return;
+ }
+
+ BufferInfo *outInfo = *outQueue.begin();
+        OMX_BUFFERHEADERTYPE *outHeader = outInfo->mHeader;
+
+ if (inHeader->nFlags & OMX_BUFFERFLAG_EOS) {
+            inQueue.erase(inQueue.begin());
+            inInfo->mOwnedByUs = false;
+            notifyEmptyBufferDone(inHeader);
+
+            outHeader->nFilledLen = 0;
+            outHeader->nFlags = OMX_BUFFERFLAG_EOS;
+
+            outQueue.erase(outQueue.begin());
+            outInfo->mOwnedByUs = false;
+            notifyFillBufferDone(outHeader);
+ return;
+ }
+
+ if (inHeader->nOffset == 0) {
+            mAnchorTimeUs = inHeader->nTimeStamp;
+            mNumFramesOutput = 0;
+ }
+
+ if (inHeader->nTimeStamp == 0) {
+            mSamplesToDiscard = mCodecDelay;
+ }
+
+ 
+         const uint8_t *data = inHeader->pBuffer + inHeader->nOffset;
+         const uint32_t size = inHeader->nFilledLen;
+ 
+         int numFrames = opus_multistream_decode(mDecoder,
+                                                 data,
+                                                 size,
+                                                 (int16_t *)outHeader->pBuffer,
+                                                kMaxOpusOutputPacketSizeSamples,
+                                                 0);
+         if (numFrames < 0) {
+             ALOGE(""opus_multistream_decode returned %d"", numFrames);
+            notify(OMX_EventError, OMX_ErrorUndefined, 0, NULL);
+ return;
+ }
+
+        outHeader->nOffset = 0;
+ if (mSamplesToDiscard > 0) {
+ if (mSamplesToDiscard > numFrames) {
+                mSamplesToDiscard -= numFrames;
+                numFrames = 0;
+ } else {
+                numFrames -= mSamplesToDiscard;
+                outHeader->nOffset = mSamplesToDiscard * sizeof(int16_t) *
+                                     mHeader->channels;
+                mSamplesToDiscard = 0;
+ }
+ }
+
+        outHeader->nFilledLen = numFrames * sizeof(int16_t) * mHeader->channels;
+        outHeader->nFlags = 0;
+
+        outHeader->nTimeStamp = mAnchorTimeUs +
+ (mNumFramesOutput * 1000000ll) /
+                                kRate;
+
+        mNumFramesOutput += numFrames;
+
+        inInfo->mOwnedByUs = false;
+        inQueue.erase(inQueue.begin());
+        inInfo = NULL;
+        notifyEmptyBufferDone(inHeader);
+        inHeader = NULL;
+
+        outInfo->mOwnedByUs = false;
+        outQueue.erase(outQueue.begin());
+        outInfo = NULL;
+        notifyFillBufferDone(outHeader);
+        outHeader = NULL;
+
+ ++mInputBufferCount;
+ }
+}
+",agree
+CVE-2016-7912,"static int __ffs_func_bind_do_os_desc(enum ffs_os_desc_type type,
+				      struct usb_os_desc_header *h, void *data,
+				      unsigned len, void *priv)
+{
+	struct ffs_function *func = priv;
+	u8 length = 0;
+
+	switch (type) {
+	case FFS_OS_DESC_EXT_COMPAT: {
+		struct usb_ext_compat_desc *desc = data;
+		struct usb_os_desc_table *t;
+
+		t = &func->function.os_desc_table[desc->bFirstInterfaceNumber];
+		t->if_id = func->interfaces_nums[desc->bFirstInterfaceNumber];
+		memcpy(t->os_desc->ext_compat_id, &desc->CompatibleID,
+		       ARRAY_SIZE(desc->CompatibleID) +
+		       ARRAY_SIZE(desc->SubCompatibleID));
+		length = sizeof(*desc);
+	}
+		break;
+	case FFS_OS_DESC_EXT_PROP: {
+		struct usb_ext_prop_desc *desc = data;
+		struct usb_os_desc_table *t;
+		struct usb_os_desc_ext_prop *ext_prop;
+		char *ext_prop_name;
+		char *ext_prop_data;
+
+		t = &func->function.os_desc_table[h->interface];
+		t->if_id = func->interfaces_nums[h->interface];
+
+		ext_prop = func->ffs->ms_os_descs_ext_prop_avail;
+		func->ffs->ms_os_descs_ext_prop_avail += sizeof(*ext_prop);
+
+		ext_prop->type = le32_to_cpu(desc->dwPropertyDataType);
+		ext_prop->name_len = le16_to_cpu(desc->wPropertyNameLength);
+		ext_prop->data_len = le32_to_cpu(*(u32 *)
+			usb_ext_prop_data_len_ptr(data, ext_prop->name_len));
+		length = ext_prop->name_len + ext_prop->data_len + 14;
+
+		ext_prop_name = func->ffs->ms_os_descs_ext_prop_name_avail;
+		func->ffs->ms_os_descs_ext_prop_name_avail +=
+			ext_prop->name_len;
+
+		ext_prop_data = func->ffs->ms_os_descs_ext_prop_data_avail;
+		func->ffs->ms_os_descs_ext_prop_data_avail +=
+			ext_prop->data_len;
+		memcpy(ext_prop_data,
+		       usb_ext_prop_data_ptr(data, ext_prop->name_len),
+		       ext_prop->data_len);
+		/* unicode data reported to the host as ""WCHAR""s */
+		switch (ext_prop->type) {
+		case USB_EXT_PROP_UNICODE:
+		case USB_EXT_PROP_UNICODE_ENV:
+		case USB_EXT_PROP_UNICODE_LINK:
+		case USB_EXT_PROP_UNICODE_MULTI:
+			ext_prop->data_len *= 2;
+			break;
+		}
+		ext_prop->data = ext_prop_data;
+
+		memcpy(ext_prop_name, usb_ext_prop_name_ptr(data),
+		       ext_prop->name_len);
+		/* property name reported to the host as ""WCHAR""s */
+		ext_prop->name_len *= 2;
+		ext_prop->name = ext_prop_name;
+
+		t->os_desc->ext_prop_len +=
+			ext_prop->name_len + ext_prop->data_len + 14;
+		++t->os_desc->ext_prop_count;
+		list_add_tail(&ext_prop->entry, &t->os_desc->ext_prop);
+	}
+		break;
+	default:
+		pr_vdebug(""unknown descriptor: %d\n"", type);
+	}
+
+	return length;
+}
+",agree
+CVE-2012-5139,"  void DoCallback(int rv) {
+    ASSERT_NE(NOT_BLOCKED, state_);
+    CompletionCallback callback = callback_;
+    Reset();
+    callback.Run(rv);
+  }
+",disagree
+CVE-2018-6140,"void ServiceWorkerDevToolsAgentHost::WorkerRestarted(int worker_process_id,
+                                                     int worker_route_id) {
+  DCHECK_EQ(WORKER_TERMINATED, state_);
+  state_ = WORKER_NOT_READY;
+  worker_process_id_ = worker_process_id;
+  worker_route_id_ = worker_route_id;
+  for (auto* inspector : protocol::InspectorHandler::ForAgentHost(this))
+    inspector->TargetReloadedAfterCrash();
+  for (DevToolsSession* session : sessions())
+    session->SetRenderer(worker_process_id_, nullptr);
+}
+",disagree
+CVE-2018-12714,"void tracing_record_taskinfo(struct task_struct *task, int flags)
+{
+	bool done;
+
+	if (tracing_record_taskinfo_skip(flags))
+		return;
+
+	/*
+	 * Record as much task information as possible. If some fail, continue
+	 * to try to record the others.
+	 */
+	done = !(flags & TRACE_RECORD_CMDLINE) || trace_save_cmdline(task);
+	done &= !(flags & TRACE_RECORD_TGID) || trace_save_tgid(task);
+
+	/* If recording any information failed, retry again soon. */
+	if (!done)
+		return;
+
+	__this_cpu_write(trace_taskinfo_save, false);
+}
+",neutral
+CVE-2016-10150,"static long kvm_vm_ioctl(struct file *filp,
+			   unsigned int ioctl, unsigned long arg)
+{
+	struct kvm *kvm = filp->private_data;
+	void __user *argp = (void __user *)arg;
+	int r;
+
+	if (kvm->mm != current->mm)
+		return -EIO;
+	switch (ioctl) {
+	case KVM_CREATE_VCPU:
+		r = kvm_vm_ioctl_create_vcpu(kvm, arg);
+		break;
+	case KVM_SET_USER_MEMORY_REGION: {
+		struct kvm_userspace_memory_region kvm_userspace_mem;
+
+		r = -EFAULT;
+		if (copy_from_user(&kvm_userspace_mem, argp,
+						sizeof(kvm_userspace_mem)))
+			goto out;
+
+		r = kvm_vm_ioctl_set_memory_region(kvm, &kvm_userspace_mem);
+		break;
+	}
+	case KVM_GET_DIRTY_LOG: {
+		struct kvm_dirty_log log;
+
+		r = -EFAULT;
+		if (copy_from_user(&log, argp, sizeof(log)))
+			goto out;
+		r = kvm_vm_ioctl_get_dirty_log(kvm, &log);
+		break;
+	}
+#ifdef KVM_COALESCED_MMIO_PAGE_OFFSET
+	case KVM_REGISTER_COALESCED_MMIO: {
+		struct kvm_coalesced_mmio_zone zone;
+
+		r = -EFAULT;
+		if (copy_from_user(&zone, argp, sizeof(zone)))
+			goto out;
+		r = kvm_vm_ioctl_register_coalesced_mmio(kvm, &zone);
+		break;
+	}
+	case KVM_UNREGISTER_COALESCED_MMIO: {
+		struct kvm_coalesced_mmio_zone zone;
+
+		r = -EFAULT;
+		if (copy_from_user(&zone, argp, sizeof(zone)))
+			goto out;
+		r = kvm_vm_ioctl_unregister_coalesced_mmio(kvm, &zone);
+		break;
+	}
+#endif
+	case KVM_IRQFD: {
+		struct kvm_irqfd data;
+
+		r = -EFAULT;
+		if (copy_from_user(&data, argp, sizeof(data)))
+			goto out;
+		r = kvm_irqfd(kvm, &data);
+		break;
+	}
+	case KVM_IOEVENTFD: {
+		struct kvm_ioeventfd data;
+
+		r = -EFAULT;
+		if (copy_from_user(&data, argp, sizeof(data)))
+			goto out;
+		r = kvm_ioeventfd(kvm, &data);
+		break;
+	}
+#ifdef CONFIG_HAVE_KVM_MSI
+	case KVM_SIGNAL_MSI: {
+		struct kvm_msi msi;
+
+		r = -EFAULT;
+		if (copy_from_user(&msi, argp, sizeof(msi)))
+			goto out;
+		r = kvm_send_userspace_msi(kvm, &msi);
+		break;
+	}
+#endif
+#ifdef __KVM_HAVE_IRQ_LINE
+	case KVM_IRQ_LINE_STATUS:
+	case KVM_IRQ_LINE: {
+		struct kvm_irq_level irq_event;
+
+		r = -EFAULT;
+		if (copy_from_user(&irq_event, argp, sizeof(irq_event)))
+			goto out;
+
+		r = kvm_vm_ioctl_irq_line(kvm, &irq_event,
+					ioctl == KVM_IRQ_LINE_STATUS);
+		if (r)
+			goto out;
+
+		r = -EFAULT;
+		if (ioctl == KVM_IRQ_LINE_STATUS) {
+			if (copy_to_user(argp, &irq_event, sizeof(irq_event)))
+				goto out;
+		}
+
+		r = 0;
+		break;
+	}
+#endif
+#ifdef CONFIG_HAVE_KVM_IRQ_ROUTING
+	case KVM_SET_GSI_ROUTING: {
+		struct kvm_irq_routing routing;
+		struct kvm_irq_routing __user *urouting;
+		struct kvm_irq_routing_entry *entries = NULL;
+
+		r = -EFAULT;
+		if (copy_from_user(&routing, argp, sizeof(routing)))
+			goto out;
+		r = -EINVAL;
+		if (routing.nr > KVM_MAX_IRQ_ROUTES)
+			goto out;
+		if (routing.flags)
+			goto out;
+		if (routing.nr) {
+			r = -ENOMEM;
+			entries = vmalloc(routing.nr * sizeof(*entries));
+			if (!entries)
+				goto out;
+			r = -EFAULT;
+			urouting = argp;
+			if (copy_from_user(entries, urouting->entries,
+					   routing.nr * sizeof(*entries)))
+				goto out_free_irq_routing;
+		}
+		r = kvm_set_irq_routing(kvm, entries, routing.nr,
+					routing.flags);
+out_free_irq_routing:
+		vfree(entries);
+		break;
+	}
+#endif /* CONFIG_HAVE_KVM_IRQ_ROUTING */
+	case KVM_CREATE_DEVICE: {
+		struct kvm_create_device cd;
+
+		r = -EFAULT;
+		if (copy_from_user(&cd, argp, sizeof(cd)))
+			goto out;
+
+		r = kvm_ioctl_create_device(kvm, &cd);
+		if (r)
+			goto out;
+
+		r = -EFAULT;
+		if (copy_to_user(argp, &cd, sizeof(cd)))
+			goto out;
+
+		r = 0;
+		break;
+	}
+	case KVM_CHECK_EXTENSION:
+		r = kvm_vm_ioctl_check_extension_generic(kvm, arg);
+		break;
+	default:
+		r = kvm_arch_vm_ioctl(filp, ioctl, arg);
+	}
+out:
+	return r;
+}
+",disagree
+CVE-2018-12714,"static int instance_mkdir(const char *name)
+{
+	struct trace_array *tr;
+	int ret;
+
+	mutex_lock(&event_mutex);
+	mutex_lock(&trace_types_lock);
+
+	ret = -EEXIST;
+	list_for_each_entry(tr, &ftrace_trace_arrays, list) {
+		if (tr->name && strcmp(tr->name, name) == 0)
+			goto out_unlock;
+	}
+
+	ret = -ENOMEM;
+	tr = kzalloc(sizeof(*tr), GFP_KERNEL);
+	if (!tr)
+		goto out_unlock;
+
+	tr->name = kstrdup(name, GFP_KERNEL);
+	if (!tr->name)
+		goto out_free_tr;
+
+	if (!alloc_cpumask_var(&tr->tracing_cpumask, GFP_KERNEL))
+		goto out_free_tr;
+
+	tr->trace_flags = global_trace.trace_flags & ~ZEROED_TRACE_FLAGS;
+
+	cpumask_copy(tr->tracing_cpumask, cpu_all_mask);
+
+	raw_spin_lock_init(&tr->start_lock);
+
+	tr->max_lock = (arch_spinlock_t)__ARCH_SPIN_LOCK_UNLOCKED;
+
+	tr->current_trace = &nop_trace;
+
+	INIT_LIST_HEAD(&tr->systems);
+	INIT_LIST_HEAD(&tr->events);
+	INIT_LIST_HEAD(&tr->hist_vars);
+
+	if (allocate_trace_buffers(tr, trace_buf_size) < 0)
+		goto out_free_tr;
+
+	tr->dir = tracefs_create_dir(name, trace_instance_dir);
+	if (!tr->dir)
+		goto out_free_tr;
+
+	ret = event_trace_add_tracer(tr->dir, tr);
+	if (ret) {
+		tracefs_remove_recursive(tr->dir);
+		goto out_free_tr;
+	}
+
+	ftrace_init_trace_array(tr);
+
+	init_tracer_tracefs(tr, tr->dir);
+	init_trace_flags_index(tr);
+	__update_tracer_options(tr);
+
+	list_add(&tr->list, &ftrace_trace_arrays);
+
+	mutex_unlock(&trace_types_lock);
+	mutex_unlock(&event_mutex);
+
+	return 0;
+
+ out_free_tr:
+	free_trace_buffers(tr);
+	free_cpumask_var(tr->tracing_cpumask);
+	kfree(tr->name);
+	kfree(tr);
+
+ out_unlock:
+	mutex_unlock(&trace_types_lock);
+	mutex_unlock(&event_mutex);
+
+	return ret;
+
+}
+",neutral
+CVE-2016-7910,"void put_disk(struct gendisk *disk)
+{
+	if (disk)
+		kobject_put(&disk_to_dev(disk)->kobj);
+}
+",disagree
+CVE-2016-7910,"static void set_disk_ro_uevent(struct gendisk *gd, int ro)
+{
+	char event[] = ""DISK_RO=1"";
+	char *envp[] = { event, NULL };
+
+	if (!ro)
+		event[8] = '0';
+	kobject_uevent_env(&disk_to_dev(gd)->kobj, KOBJ_CHANGE, envp);
+}
+",disagree
+CVE-2012-5139,"  BlockingNetworkDelegate()
+      : retval_(ERR_IO_PENDING),
+        callback_retval_(OK),
+        auth_retval_(NetworkDelegate::AUTH_REQUIRED_RESPONSE_IO_PENDING),
+        auth_callback_retval_(
+            NetworkDelegate::AUTH_REQUIRED_RESPONSE_NO_ACTION),
+        ALLOW_THIS_IN_INITIALIZER_LIST(weak_factory_(this)) {}
+",agree
+CVE-2017-13715,"u32 flow_hash_from_keys(struct flow_keys *keys)
+{
+	__flow_hash_secret_init();
+	return __flow_hash_from_keys(keys, hashrnd);
+}
+",disagree
+CVE-2018-12714,"static int trace_set_options(struct trace_array *tr, char *option)
+{
+	char *cmp;
+	int neg = 0;
+	int ret;
+	size_t orig_len = strlen(option);
+
+	cmp = strstrip(option);
+
+	if (strncmp(cmp, ""no"", 2) == 0) {
+		neg = 1;
+		cmp += 2;
+	}
+
+	mutex_lock(&trace_types_lock);
+
+	ret = match_string(trace_options, -1, cmp);
+	/* If no option could be set, test the specific tracer options */
+	if (ret < 0)
+		ret = set_tracer_option(tr, cmp, neg);
+	else
+		ret = set_tracer_flag(tr, 1 << ret, !neg);
+
+	mutex_unlock(&trace_types_lock);
+
+	/*
+	 * If the first trailing whitespace is replaced with '\0' by strstrip,
+	 * turn it back into a space.
+	 */
+	if (orig_len > strlen(option))
+		option[strlen(option)] = ' ';
+
+	return ret;
+}
+",disagree
+CVE-2018-12714,"int trace_pid_write(struct trace_pid_list *filtered_pids,
+		    struct trace_pid_list **new_pid_list,
+		    const char __user *ubuf, size_t cnt)
+{
+	struct trace_pid_list *pid_list;
+	struct trace_parser parser;
+	unsigned long val;
+	int nr_pids = 0;
+	ssize_t read = 0;
+	ssize_t ret = 0;
+	loff_t pos;
+	pid_t pid;
+
+	if (trace_parser_get_init(&parser, PID_BUF_SIZE + 1))
+		return -ENOMEM;
+
+	/*
+	 * Always recreate a new array. The write is an all or nothing
+	 * operation. Always create a new array when adding new pids by
+	 * the user. If the operation fails, then the current list is
+	 * not modified.
+	 */
+	pid_list = kmalloc(sizeof(*pid_list), GFP_KERNEL);
+	if (!pid_list)
+		return -ENOMEM;
+
+	pid_list->pid_max = READ_ONCE(pid_max);
+
+	/* Only truncating will shrink pid_max */
+	if (filtered_pids && filtered_pids->pid_max > pid_list->pid_max)
+		pid_list->pid_max = filtered_pids->pid_max;
+
+	pid_list->pids = vzalloc((pid_list->pid_max + 7) >> 3);
+	if (!pid_list->pids) {
+		kfree(pid_list);
+		return -ENOMEM;
+	}
+
+	if (filtered_pids) {
+		/* copy the current bits to the new max */
+		for_each_set_bit(pid, filtered_pids->pids,
+				 filtered_pids->pid_max) {
+			set_bit(pid, pid_list->pids);
+			nr_pids++;
+		}
+	}
+
+	while (cnt > 0) {
+
+		pos = 0;
+
+		ret = trace_get_user(&parser, ubuf, cnt, &pos);
+		if (ret < 0 || !trace_parser_loaded(&parser))
+			break;
+
+		read += ret;
+		ubuf += ret;
+		cnt -= ret;
+
+		ret = -EINVAL;
+		if (kstrtoul(parser.buffer, 0, &val))
+			break;
+		if (val >= pid_list->pid_max)
+			break;
+
+		pid = (pid_t)val;
+
+		set_bit(pid, pid_list->pids);
+		nr_pids++;
+
+		trace_parser_clear(&parser);
+		ret = 0;
+	}
+	trace_parser_put(&parser);
+
+	if (ret < 0) {
+		trace_free_pid_list(pid_list);
+		return ret;
+	}
+
+	if (!nr_pids) {
+		/* Cleared the list of pids */
+		trace_free_pid_list(pid_list);
+		read = ret;
+		pid_list = NULL;
+	}
+
+	*new_pid_list = pid_list;
+
+	return read;
+}
+",disagree
+CVE-2010-4818,"static void StopUsingContext(__GLXcontext *glxc)
+{
+    if (glxc) {
+	if (glxc == __glXLastContext) {
+	    /* Tell server GL library */
+	    __glXLastContext = 0;
+	}
+	glxc->isCurrent = GL_FALSE;
+	if (!glxc->idExists) {
+	    __glXFreeContext(glxc);
+	}
+    }
+}
+",disagree
+CVE-2018-6651,"UNCURL_EXPORT int32_t uncurl_read_header(struct uncurl_conn *ucc)
+{
+	int32_t e;
+
+	if (ucc->hin) http_free_header(ucc->hin);
+	ucc->hin = NULL;
+
+	char *header = NULL;
+	e = uncurl_read_header_(ucc, &header);
+
+	if (e == UNCURL_OK) {
+		ucc->hin = http_parse_header(header);
+		free(header);
+	}
+
+	return e;
+}
+",disagree
+CVE-2018-12714,"static __init int spawn_ksoftirqd(void)
+{
+	cpuhp_setup_state_nocalls(CPUHP_SOFTIRQ_DEAD, ""softirq:dead"", NULL,
+				  takeover_tasklets);
+	BUG_ON(smpboot_register_percpu_thread(&softirq_threads));
+
+	return 0;
+}
+",disagree
+CVE-2016-2464,"const Cluster* Segment::GetFirst() const {
+ if ((m_clusters == NULL) || (m_clusterCount <= 0))
+ return &m_eos;
+
+ Cluster* const pCluster = m_clusters[0];
+  assert(pCluster);
+
+ return pCluster;
+}
+",disagree
+CVE-2016-2464,"Cues::Cues(Segment* pSegment, long long start_, long long size_,
+ long long element_start, long long element_size)
+ : m_pSegment(pSegment),
+      m_start(start_),
+      m_size(size_),
+      m_element_start(element_start),
+      m_element_size(element_size),
+      m_cue_points(NULL),
+      m_count(0),
+      m_preload_count(0),
+      m_pos(start_) {}
+",disagree
+CVE-2019-7443,"void DBusHelperProxy::setHelperResponder(QObject *o)
+{
+    responder = o;
+}
+",neutral
+CVE-2019-5787,"void HTMLCanvasElement::ParseAttribute(
+    const AttributeModificationParams& params) {
+  if (params.name == kWidthAttr || params.name == kHeightAttr)
+    Reset();
+  HTMLElement::ParseAttribute(params);
+}
+",agree
+CVE-2018-12714,"rm_trace_export(struct trace_export **list, struct trace_export *export)
+{
+	struct trace_export **p;
+
+	for (p = list; *p != NULL; p = &(*p)->next)
+		if (*p == export)
+			break;
+
+	if (*p != export)
+		return -1;
+
+	rcu_assign_pointer(*p, (*p)->next);
+
+	return 0;
+}
+",agree
+CVE-2019-11811,"static void start_new_msg(struct smi_info *smi_info, unsigned char *msg,
+			  unsigned int size)
+{
+	smi_mod_timer(smi_info, jiffies + SI_TIMEOUT_JIFFIES);
+
+	if (smi_info->thread)
+		wake_up_process(smi_info->thread);
+
+	smi_info->handlers->start_transaction(smi_info->si_sm, msg, size);
+}
+",disagree
+CVE-2017-0812,"static int get_snd_codec_id(audio_format_t format)
+{
+ int id = 0;
+
+ switch (format & AUDIO_FORMAT_MAIN_MASK) {
+ default:
+        ALOGE(""%s: Unsupported audio format"", __func__);
+ }
+
+ return id;
+}
+",disagree
+CVE-2019-13106,"int board_early_init_f(void)
+{
+	ccsr_gur_t *gur = (void *)(CONFIG_SYS_MPC85xx_GUTS_ADDR);
+	bool cpuwd_flag = false;
+
+	/* configure mode for uP reset request */
+	qrio_uprstreq(UPREQ_CORE_RST);
+
+	/* board only uses the DDR_MCK0, so disable the DDR_MCK1/2/3 */
+	setbits_be32(&gur->ddrclkdr, 0x001f000f);
+
+	/* set reset reason according CPU register */
+	if ((gur->rstrqsr1 & (RSTRQSR1_WDT_RR | RSTRQSR1_SW_RR)) ==
+	    RSTRQSR1_WDT_RR)
+		cpuwd_flag = true;
+
+	qrio_cpuwd_flag(cpuwd_flag);
+	/* clear CPU bits by writing 1 */
+	setbits_be32(&gur->rstrqsr1, RSTRQSR1_WDT_RR | RSTRQSR1_SW_RR);
+
+	/* set the BFTIC's prstcfg to reset at power-up and unit reset only */
+	qrio_prstcfg(BFTIC4_RST, PRSTCFG_POWUP_UNIT_RST);
+	/* and enable WD on it */
+	qrio_wdmask(BFTIC4_RST, true);
+
+	/* set the ZL30138's prstcfg to reset at power-up only */
+	qrio_prstcfg(ZL30158_RST, PRSTCFG_POWUP_RST);
+	/* and take it out of reset as soon as possible (needed for Hooper) */
+	qrio_prst(ZL30158_RST, false, false);
+
+	return 0;
+}
+",disagree
