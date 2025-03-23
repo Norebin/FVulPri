@@ -1,0 +1,1 @@
+we have conducted a small-scale expert evaluation to gather human feedback on FVulPri’s performance. Due to resource constraints, we implemented a sampling approach where a subset of prioritized vulnerabilities was assessed by a small group of security experts.
